@@ -3,7 +3,7 @@ name: Build AWS EFS Utils for Debian 13
 on:
   workflow_dispatch:      # Manual trigger from GitHub UI
   schedule:
-    - cron: '0 3 1,15 * *'   # Runs automatically on the 1st and 15th of every month (~every 2 weeks)
+    - cron: '0 */6 * * *'   # Runs every 6 hours (00:00, 06:00, 12:00, 18:00 UTC)
 
 jobs:
   build-deb:
@@ -20,36 +20,62 @@ jobs:
           apt-get update
           apt-get install -y \
             git binutils rustc cargo libssl-dev pkg-config gettext make cmake wget perl \
-            gcc-13 g++-13 golang-go
+            gcc-13 g++-13 golang-go jq
 
-      - name: Clone and Build EFS Utils
-        id: extract-version
+      - name: Clone EFS Utils Repository
+        run: git clone https://github.com/aws/efs-utils.git
+
+      - name: Check for New Upstream Version
+        id: check-version
+        working-directory: efs-utils
+        run: |
+          UPSTREAM_VERSION=$(grep '^VERSION=' build-deb.sh | cut -d= -f2 | tr -d '"')
+          echo "Upstream AWS version detected: $UPSTREAM_VERSION"
+          echo "version=$UPSTREAM_VERSION" >> $GITHUB_OUTPUT
+
+          # Check what version is currently published in our debian13 release
+          API_URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/aws-efs-utils/debian13"
+          RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "$API_URL")
+
+          if echo "$RESPONSE" | grep -q '"message": "Not Found"'; then
+            echo "No previous release found → building for the first time"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          else
+            LATEST_VERSION=$(echo "$RESPONSE" | jq -r '.body' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "0.0.0")
+            echo "Latest published version: $LATEST_VERSION"
+
+            if [ "$UPSTREAM_VERSION" != "$LATEST_VERSION" ]; then
+              echo "New version detected → will build and publish"
+              echo "should_build=true" >> $GITHUB_OUTPUT
+            else
+              echo "No new version → skipping build and publish"
+              echo "should_build=false" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Build and Rename Package
+        if: steps.check-version.outputs.should_build == 'true'
+        working-directory: efs-utils
         run: |
           # Force consistent GCC 13 everywhere (fixes LTO version mismatch)
           export CC=gcc-13
           export CXX=g++-13
           export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=gcc-13
 
-          git clone https://github.com/aws/efs-utils.git
-          cd efs-utils
+          # Rename everything from amazon-efs-utils → aws-efs-utils
+          sed -i 's/amazon-efs-utils/aws-efs-utils/g' dist/amazon-efs-utils.control
+          sed -i 's/amazon-efs-utils-/aws-efs-utils-/g' build-deb.sh
 
-          # DYNAMIC VERSIONING (always uses exact upstream AWS version) ===
-          UPSTREAM_VERSION=$(grep '^VERSION=' build-deb.sh | cut -d= -f2 | tr -d '"')
-          echo "Upstream AWS version detected: $UPSTREAM_VERSION"
-          echo "version=$UPSTREAM_VERSION" >> $GITHUB_OUTPUT
-
-          # Rename package from amazon-efs-utils → aws-efs-utils
-          sed -i 's/^Package: amazon-efs-utils/Package: aws-efs-utils/' debian/control
-
-          # Change release suffix so package becomes e.g. 2.4.2-1~debian13
+          # Set Debian 13 release suffix
           sed -i "s/^RELEASE=1$/RELEASE=1~debian13/" build-deb.sh
 
           ./build-deb.sh
 
-          # Show final packages for logging
+          # Show final packages
           ls -l build/aws-efs-utils*.deb
 
       - name: Verify the Debian Package
+        if: steps.check-version.outputs.should_build == 'true'
         run: |
           echo "🔍 Installing and testing the .deb on Debian 13..."
           DEBIAN_FRONTEND=noninteractive apt-get update
@@ -65,13 +91,14 @@ jobs:
           echo "🎉 Verification PASSED!"
 
       - name: Prepare Latest Asset
+        if: steps.check-version.outputs.should_build == 'true'
         run: |
-          cd efs-utils
-          cp build/aws-efs-utils-${{ steps.extract-version.outputs.version }}-1~debian13_amd64.deb \
-             build/aws-efs-utils-latest~debian13_amd64.deb
-          ls -l build/aws-efs-utils*.deb
+          cp efs-utils/build/aws-efs-utils-${{ steps.check-version.outputs.version }}-1~debian13_amd64.deb \
+             efs-utils/build/aws-efs-utils-latest~debian13_amd64.deb
+          ls -l efs-utils/build/aws-efs-utils*.deb
 
       - name: Upload Artifact (temporary download)
+        if: steps.check-version.outputs.should_build == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: aws-efs-utils-debian13
@@ -79,6 +106,7 @@ jobs:
           retention-days: 14
 
       - name: Publish to aws-efs-utils/debian13 Release
+        if: steps.check-version.outputs.should_build == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: aws-efs-utils/debian13
@@ -86,19 +114,19 @@ jobs:
           body: |
             **Debian 13 (trixie) build of aws-efs-utils**
 
-            - Upstream version: ${{ steps.extract-version.outputs.version }}
+            - Upstream version: ${{ steps.check-version.outputs.version }}
             - Files in this release (folder `aws-efs-utils/debian13/`):
-              - `aws-efs-utils-${{ steps.extract-version.outputs.version }}-1~debian13_amd64.deb` (specific version)
-              - `aws-efs-utils-latest~debian13_amd64.deb` (always points to the latest build)
+              - `aws-efs-utils-${{ steps.check-version.outputs.version }}-1~debian13_amd64.deb` (specific version)
+              - `aws-efs-utils-latest~debian13_amd64.deb` (always points to the latest)
             - All previous versions are kept in this release.
-            - Built on: ${{ github.event_name == 'schedule' && 'scheduled run' || 'manual trigger' }}
+            - Built on: ${{ github.event_name == 'schedule' && 'scheduled run (every 6h)' || 'manual trigger' }}
             - GitHub Actions run: ${{ github.run_id }}
             - Verification: ✅ Passed
           files: |
-            efs-utils/build/aws-efs-utils-${{ steps.extract-version.outputs.version }}-1~debian13_amd64.deb
+            efs-utils/build/aws-efs-utils-${{ steps.check-version.outputs.version }}-1~debian13_amd64.deb
             efs-utils/build/aws-efs-utils-latest~debian13_amd64.deb
           draft: false
           prerelease: false
-          make_latest: true   # Marks this as the "Latest" release in GitHub UI
+          make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
