@@ -6,30 +6,32 @@ on:
 jobs:
   build-deb:
     runs-on: ubuntu-latest
-    # Run the job inside a Debian 13 container to ensure perfect compatibility
     container:
-      image: debian:trixie 
+      image: debian:trixie
 
     steps:
       - name: Install Dependencies
-        # Note: We don't need 'sudo' here because the container runs as root by default
         run: |
           apt-get update
-          apt-get install -y git binutils rustc cargo libssl-dev pkg-config gettext make cmake wget perl gcc-13 g++-13 golang
+          apt-get install -y \
+            git binutils rustc cargo libssl-dev pkg-config gettext make cmake wget perl \
+            gcc-13 g++-13 golang-go
 
       - name: Clone and Build EFS Utils
         run: |
-          # Set GCC 13 as the compiler
+          # === CRITICAL: Force consistent GCC 13 for EVERYTHING ===
           export CC=gcc-13
           export CXX=g++-13
-          
+          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=gcc-13   # ← This fixes the LTO error
+
           git clone https://github.com/aws/efs-utils
           cd efs-utils
+
           ./build-deb.sh
 
       - name: Upload Debian Package Artifact
         uses: actions/upload-artifact@v4
         with:
           name: amazon-efs-utils-debian13
-          path: efs-utils/build/amazon-efs-utils*deb
-          retention-days: 14 # Keep the artifact around for 2 weeks
+          path: efs-utils/build/amazon-efs-utils*.deb
+          retention-days: 14
