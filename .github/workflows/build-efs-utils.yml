@@ -33,8 +33,8 @@ jobs:
           echo "Upstream AWS version detected: $UPSTREAM_VERSION"
           echo "version=$UPSTREAM_VERSION" >> $GITHUB_OUTPUT
 
-          # Check what version is currently published in our release
-          API_URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/amazon-efs-utils/debian13"
+          # Check against our stable "latest" release
+          API_URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/amazon-efs-utils-debian13"
           RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "$API_URL")
 
           if echo "$RESPONSE" | grep -q '"message": "Not Found"'; then
@@ -101,19 +101,38 @@ jobs:
           path: efs-utils/build/amazon-efs-utils*.deb
           retention-days: 14
 
-      - name: Publish to amazon-efs-utils/debian13 Release
+      - name: Publish Versioned Release (immutable)
         if: steps.check-version.outputs.should_build == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: amazon-efs-utils/debian13
-          name: AWS EFS Utils for Debian 13
+          tag_name: amazon-efs-utils-debian13-v${{ steps.check-version.outputs.version }}
+          name: amazon-efs-utils-debian13 v${{ steps.check-version.outputs.version }}
           body: |
             **Debian 13 (trixie) build of amazon-efs-utils**
 
             - Upstream version: ${{ steps.check-version.outputs.version }}
-            - Files in this release (folder `amazon-efs-utils/debian13/`):
-              - `amazon-efs-utils-${{ steps.check-version.outputs.version }}-1.debian13_amd64.deb` (specific version)
-              - `amazon-efs-utils-latest.debian13_amd64.deb` (always points to the latest)
+            - Built on: ${{ github.event_name == 'schedule' && 'scheduled run (every 6h)' || 'manual trigger' }}
+            - GitHub Actions run: ${{ github.run_id }}
+            - Verification: ✅ Passed
+          files: efs-utils/build/amazon-efs-utils-${{ steps.check-version.outputs.version }}-1.debian13_amd64.deb
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Latest Release (stable URL)
+        if: steps.check-version.outputs.should_build == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: amazon-efs-utils-debian13
+          name: AWS EFS Utils for Debian 13 (Latest)
+          body: |
+            **Latest Debian 13 (trixie) build of amazon-efs-utils**
+
+            - Current upstream version: ${{ steps.check-version.outputs.version }}
+            - Files:
+              - `amazon-efs-utils-${{ steps.check-version.outputs.version }}-1.debian13_amd64.deb`
+              - `amazon-efs-utils-latest.debian13_amd64.deb` (always updated)
             - All previous versions are kept in this release.
             - Built on: ${{ github.event_name == 'schedule' && 'scheduled run (every 6h)' || 'manual trigger' }}
             - GitHub Actions run: ${{ github.run_id }}
