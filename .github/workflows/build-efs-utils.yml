@@ -1,7 +1,7 @@
 name: Build AWS EFS Utils for Debian 13
 
 on:
-  workflow_dispatch:      # Manual trigger
+  workflow_dispatch:      # Manual trigger from GitHub UI
   schedule:
     - cron: '0 3 1,15 * *'   # Runs automatically on the 1st and 15th of every month (~every 2 weeks)
 
@@ -12,7 +12,7 @@ jobs:
       image: debian:trixie
 
     permissions:
-      contents: write   # Required to create/update GitHub Releases
+      contents: write   # Required for creating/updating GitHub Releases
 
     steps:
       - name: Install Dependencies
@@ -25,7 +25,7 @@ jobs:
       - name: Clone and Build EFS Utils
         id: extract-version
         run: |
-          # Force consistent GCC 13 everywhere (fixes the LTO error)
+          # Force consistent GCC 13 everywhere (fixes LTO version mismatch)
           export CC=gcc-13
           export CXX=g++-13
           export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=gcc-13
@@ -33,12 +33,12 @@ jobs:
           git clone https://github.com/aws/efs-utils.git
           cd efs-utils
 
-          # === DYNAMIC VERSIONING ===
+          # DYNAMIC VERSIONING (always uses exact upstream AWS version) ===
           UPSTREAM_VERSION=$(grep '^VERSION=' build-deb.sh | cut -d= -f2 | tr -d '"')
           echo "Upstream AWS version detected: $UPSTREAM_VERSION"
           echo "version=$UPSTREAM_VERSION" >> $GITHUB_OUTPUT
 
-          # Make package name = 2.4.2-1~debian13 (clearly identifies Debian 13 build)
+          # Change release suffix so package becomes e.g. 2.4.2-1~debian13
           sed -i "s/^RELEASE=1$/RELEASE=1~debian13/" build-deb.sh
 
           ./build-deb.sh
@@ -68,7 +68,7 @@ jobs:
           path: efs-utils/build/amazon-efs-utils*.deb
           retention-days: 14
 
-      - name: Publish to GitHub Release
+      - name: Publish Versioned Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: debian13-v${{ steps.extract-version.outputs.version }}
@@ -84,5 +84,26 @@ jobs:
           files: efs-utils/build/amazon-efs-utils*.deb
           draft: false
           prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish Latest Release (always up-to-date)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: debian13-latest
+          name: Amazon EFS Utils for Debian 13 - Latest
+          body: |
+            **Latest Debian 13 (trixie) build of amazon-efs-utils**
+
+            - This release is automatically kept up-to-date.
+            - Upstream version: ${{ steps.extract-version.outputs.version }}
+            - Package: `amazon-efs-utils-${{ steps.extract-version.outputs.version }}-1~debian13_amd64.deb`
+            - Built on: ${{ github.event_name == 'schedule' && 'scheduled run' || 'manual trigger' }}
+            - GitHub Actions run: ${{ github.run_id }}
+            - Verification: ✅ Passed
+          files: efs-utils/build/amazon-efs-utils*.deb
+          draft: false
+          prerelease: false
+          make_latest: true   # Makes this the "Latest" release in the GitHub UI
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
