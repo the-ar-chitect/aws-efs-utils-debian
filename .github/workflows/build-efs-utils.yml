@@ -20,7 +20,7 @@ jobs:
           apt-get update
           apt-get install -y \
             git binutils rustc cargo libssl-dev pkg-config gettext make cmake wget perl \
-            gcc-13 g++-13 golang-go jq
+            gcc-13 g++-13 golang-go jq curl
 
       - name: Clone EFS Utils Repository
         run: git clone https://github.com/aws/efs-utils.git
