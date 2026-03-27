@@ -63,15 +63,16 @@ jobs:
           export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=gcc-13
 
           # Rename everything from amazon-efs-utils → aws-efs-utils
+          # This fixes both the control file AND the exact strings inside build-deb.sh
           sed -i 's/amazon-efs-utils/aws-efs-utils/g' dist/amazon-efs-utils.control
-          sed -i 's/amazon-efs-utils-/aws-efs-utils-/g' build-deb.sh
+          sed -i 's/amazon-efs-utils/aws-efs-utils/g' build-deb.sh
 
           # Set Debian 13 release suffix
           sed -i "s/^RELEASE=1$/RELEASE=1~debian13/" build-deb.sh
 
           ./build-deb.sh
 
-          # Show final packages
+          # Show final packages for logging
           ls -l build/aws-efs-utils*.deb
 
       - name: Verify the Debian Package
