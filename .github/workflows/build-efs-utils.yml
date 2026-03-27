@@ -63,7 +63,7 @@ jobs:
           export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=gcc-13
 
           # Set Debian 13 release suffix
-          sed -i "s/^RELEASE=1$/RELEASE=1~debian13/" build-deb.sh
+          sed -i "s/^RELEASE=1$/RELEASE=1.debian13/" build-deb.sh
 
           ./build-deb.sh
 
@@ -89,8 +89,8 @@ jobs:
       - name: Prepare Latest Asset
         if: steps.check-version.outputs.should_build == 'true'
         run: |
-          cp efs-utils/build/amazon-efs-utils-${{ steps.check-version.outputs.version }}-1~debian13_amd64.deb \
-             efs-utils/build/amazon-efs-utils-latest~debian13_amd64.deb
+          cp efs-utils/build/amazon-efs-utils-${{ steps.check-version.outputs.version }}-1.debian13_amd64.deb \
+             efs-utils/build/amazon-efs-utils-latest.debian13_amd64.deb
           ls -l efs-utils/build/amazon-efs-utils*.deb
 
       - name: Upload Artifact (temporary download)
@@ -112,15 +112,15 @@ jobs:
 
             - Upstream version: ${{ steps.check-version.outputs.version }}
             - Files in this release (folder `amazon-efs-utils/debian13/`):
-              - `amazon-efs-utils-${{ steps.check-version.outputs.version }}-1~debian13_amd64.deb` (specific version)
-              - `amazon-efs-utils-latest~debian13_amd64.deb` (always points to the latest)
+              - `amazon-efs-utils-${{ steps.check-version.outputs.version }}-1.debian13_amd64.deb` (specific version)
+              - `amazon-efs-utils-latest.debian13_amd64.deb` (always points to the latest)
             - All previous versions are kept in this release.
             - Built on: ${{ github.event_name == 'schedule' && 'scheduled run (every 6h)' || 'manual trigger' }}
             - GitHub Actions run: ${{ github.run_id }}
             - Verification: ✅ Passed
           files: |
-            efs-utils/build/amazon-efs-utils-${{ steps.check-version.outputs.version }}-1~debian13_amd64.deb
-            efs-utils/build/amazon-efs-utils-latest~debian13_amd64.deb
+            efs-utils/build/amazon-efs-utils-${{ steps.check-version.outputs.version }}-1.debian13_amd64.deb
+            efs-utils/build/amazon-efs-utils-latest.debian13_amd64.deb
           draft: false
           prerelease: false
           make_latest: true
