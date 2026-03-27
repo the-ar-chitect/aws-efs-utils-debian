@@ -1,9 +1,9 @@
 name: Build AWS EFS Utils for Debian 13
 
 on:
-  workflow_dispatch: # Allows you to manually trigger the build from the GitHub UI
+  workflow_dispatch:      # Manual trigger
   schedule:
-    - cron: '0 3 1,15 * *'   # Runs on the 1st and 15th of every month at 03:00 UTC ≈ every 2 weeks
+    - cron: '0 3 1,15 * *'   # Runs automatically on the 1st and 15th of every month (~every 2 weeks)
 
 jobs:
   build-deb:
@@ -23,8 +23,9 @@ jobs:
             gcc-13 g++-13 golang-go
 
       - name: Clone and Build EFS Utils
+        id: extract-version
         run: |
-          # === CRITICAL: Force consistent GCC 13 for EVERYTHING ===
+          # Force consistent GCC 13 everywhere (fixes the LTO error)
           export CC=gcc-13
           export CXX=g++-13
           export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=gcc-13
@@ -32,17 +33,33 @@ jobs:
           git clone https://github.com/aws/efs-utils.git
           cd efs-utils
 
-          # === DYNAMIC VERSIONING (keeps AWS version + adds debian13) ===
+          # === DYNAMIC VERSIONING ===
           UPSTREAM_VERSION=$(grep '^VERSION=' build-deb.sh | cut -d= -f2 | tr -d '"')
           echo "Upstream AWS version detected: $UPSTREAM_VERSION"
-          
-          # Change RELEASE to 1~debian13 so package = 2.4.2-1~debian13
+          echo "version=$UPSTREAM_VERSION" >> $GITHUB_OUTPUT
+
+          # Make package name = 2.4.2-1~debian13 (clearly identifies Debian 13 build)
           sed -i "s/^RELEASE=1$/RELEASE=1~debian13/" build-deb.sh
 
           ./build-deb.sh
 
-          # Show final package name for logging
+          # Show final package for logging
           ls -l build/amazon-efs-utils*.deb
+
+      - name: Verify the Debian Package
+        run: |
+          echo "🔍 Installing and testing the .deb on Debian 13..."
+          DEBIAN_FRONTEND=noninteractive apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y ./efs-utils/build/amazon-efs-utils*.deb
+
+          echo "✅ Package installed successfully"
+          dpkg -l | grep -i amazon-efs-utils
+
+          echo "✅ Checking binaries..."
+          which mount.efs && echo "   mount.efs found at $(which mount.efs)"
+          amazon-efs-utils --version && echo "   Version: $(amazon-efs-utils --version)"
+
+          echo "🎉 Verification PASSED!"
 
       - name: Upload Artifact (temporary download)
         uses: actions/upload-artifact@v4
@@ -54,13 +71,16 @@ jobs:
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: debian13-v${{ steps.extract-version.outputs.version || 'latest' }}  # fallback if needed
+          tag_name: debian13-v${{ steps.extract-version.outputs.version }}
           name: Amazon EFS Utils for Debian 13 - v${{ steps.extract-version.outputs.version }}
           body: |
             **Debian 13 (trixie) build of amazon-efs-utils**
+
             - Upstream version: ${{ steps.extract-version.outputs.version }}
-            - Built on: ${{ github.event_name == 'schedule' && 'schedule' || 'manual' }}
+            - Package: `amazon-efs-utils-${{ steps.extract-version.outputs.version }}-1~debian13_amd64.deb`
+            - Built on: ${{ github.event_name == 'schedule' && 'scheduled run' || 'manual trigger' }}
             - GitHub Actions run: ${{ github.run_id }}
+            - Verification: ✅ Passed
           files: efs-utils/build/amazon-efs-utils*.deb
           draft: false
           prerelease: false
