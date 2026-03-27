@@ -2,12 +2,17 @@ name: Build AWS EFS Utils for Debian 13
 
 on:
   workflow_dispatch: # Allows you to manually trigger the build from the GitHub UI
+  schedule:
+    - cron: '0 3 1,15 * *'   # Runs on the 1st and 15th of every month at 03:00 UTC ≈ every 2 weeks
 
 jobs:
   build-deb:
     runs-on: ubuntu-latest
     container:
       image: debian:trixie
+
+    permissions:
+      contents: write   # Required to create/update GitHub Releases
 
     steps:
       - name: Install Dependencies
@@ -22,16 +27,42 @@ jobs:
           # === CRITICAL: Force consistent GCC 13 for EVERYTHING ===
           export CC=gcc-13
           export CXX=g++-13
-          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=gcc-13   # ← This fixes the LTO error
+          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=gcc-13
 
-          git clone https://github.com/aws/efs-utils
+          git clone https://github.com/aws/efs-utils.git
           cd efs-utils
+
+          # === DYNAMIC VERSIONING (keeps AWS version + adds debian13) ===
+          UPSTREAM_VERSION=$(grep '^VERSION=' build-deb.sh | cut -d= -f2 | tr -d '"')
+          echo "Upstream AWS version detected: $UPSTREAM_VERSION"
+          
+          # Change RELEASE to 1~debian13 so package = 2.4.2-1~debian13
+          sed -i "s/^RELEASE=1$/RELEASE=1~debian13/" build-deb.sh
 
           ./build-deb.sh
 
-      - name: Upload Debian Package Artifact
+          # Show final package name for logging
+          ls -l build/amazon-efs-utils*.deb
+
+      - name: Upload Artifact (temporary download)
         uses: actions/upload-artifact@v4
         with:
           name: amazon-efs-utils-debian13
           path: efs-utils/build/amazon-efs-utils*.deb
           retention-days: 14
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: debian13-v${{ steps.extract-version.outputs.version || 'latest' }}  # fallback if needed
+          name: Amazon EFS Utils for Debian 13 - v${{ steps.extract-version.outputs.version }}
+          body: |
+            **Debian 13 (trixie) build of amazon-efs-utils**
+            - Upstream version: ${{ steps.extract-version.outputs.version }}
+            - Built on: ${{ github.event_name == 'schedule' && 'schedule' || 'manual' }}
+            - GitHub Actions run: ${{ github.run_id }}
+          files: efs-utils/build/amazon-efs-utils*.deb
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
