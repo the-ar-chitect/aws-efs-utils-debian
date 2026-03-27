@@ -33,8 +33,8 @@ jobs:
           echo "Upstream AWS version detected: $UPSTREAM_VERSION"
           echo "version=$UPSTREAM_VERSION" >> $GITHUB_OUTPUT
 
-          # Check what version is currently published in our debian13 release
-          API_URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/aws-efs-utils/debian13"
+          # Check what version is currently published in our release
+          API_URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/amazon-efs-utils/debian13"
           RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "$API_URL")
 
           if echo "$RESPONSE" | grep -q '"message": "Not Found"'; then
@@ -62,28 +62,23 @@ jobs:
           export CXX=g++-13
           export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=gcc-13
 
-          # Rename everything from amazon-efs-utils → aws-efs-utils
-          # This fixes both the control file AND the exact strings inside build-deb.sh
-          sed -i 's/amazon-efs-utils/aws-efs-utils/g' dist/amazon-efs-utils.control
-          sed -i 's/amazon-efs-utils/aws-efs-utils/g' build-deb.sh
-
           # Set Debian 13 release suffix
           sed -i "s/^RELEASE=1$/RELEASE=1~debian13/" build-deb.sh
 
           ./build-deb.sh
 
           # Show final packages for logging
-          ls -l build/aws-efs-utils*.deb
+          ls -l build/amazon-efs-utils*.deb
 
       - name: Verify the Debian Package
         if: steps.check-version.outputs.should_build == 'true'
         run: |
           echo "🔍 Installing and testing the .deb on Debian 13..."
           DEBIAN_FRONTEND=noninteractive apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y ./efs-utils/build/aws-efs-utils*.deb
+          DEBIAN_FRONTEND=noninteractive apt-get install -y ./efs-utils/build/amazon-efs-utils*.deb
 
           echo "✅ Package installed successfully"
-          dpkg -l | grep -i aws-efs-utils
+          dpkg -l | grep -i amazon-efs-utils
 
           echo "✅ Checking binaries..."
           which mount.efs && echo "   mount.efs found at $(which mount.efs)"
@@ -94,38 +89,38 @@ jobs:
       - name: Prepare Latest Asset
         if: steps.check-version.outputs.should_build == 'true'
         run: |
-          cp efs-utils/build/aws-efs-utils-${{ steps.check-version.outputs.version }}-1~debian13_amd64.deb \
-             efs-utils/build/aws-efs-utils-latest~debian13_amd64.deb
-          ls -l efs-utils/build/aws-efs-utils*.deb
+          cp efs-utils/build/amazon-efs-utils-${{ steps.check-version.outputs.version }}-1~debian13_amd64.deb \
+             efs-utils/build/amazon-efs-utils-latest~debian13_amd64.deb
+          ls -l efs-utils/build/amazon-efs-utils*.deb
 
       - name: Upload Artifact (temporary download)
         if: steps.check-version.outputs.should_build == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: aws-efs-utils-debian13
-          path: efs-utils/build/aws-efs-utils*.deb
+          name: amazon-efs-utils-debian13
+          path: efs-utils/build/amazon-efs-utils*.deb
           retention-days: 14
 
-      - name: Publish to aws-efs-utils/debian13 Release
+      - name: Publish to amazon-efs-utils/debian13 Release
         if: steps.check-version.outputs.should_build == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: aws-efs-utils/debian13
+          tag_name: amazon-efs-utils/debian13
           name: AWS EFS Utils for Debian 13
           body: |
-            **Debian 13 (trixie) build of aws-efs-utils**
+            **Debian 13 (trixie) build of amazon-efs-utils**
 
             - Upstream version: ${{ steps.check-version.outputs.version }}
-            - Files in this release (folder `aws-efs-utils/debian13/`):
-              - `aws-efs-utils-${{ steps.check-version.outputs.version }}-1~debian13_amd64.deb` (specific version)
-              - `aws-efs-utils-latest~debian13_amd64.deb` (always points to the latest)
+            - Files in this release (folder `amazon-efs-utils/debian13/`):
+              - `amazon-efs-utils-${{ steps.check-version.outputs.version }}-1~debian13_amd64.deb` (specific version)
+              - `amazon-efs-utils-latest~debian13_amd64.deb` (always points to the latest)
             - All previous versions are kept in this release.
             - Built on: ${{ github.event_name == 'schedule' && 'scheduled run (every 6h)' || 'manual trigger' }}
             - GitHub Actions run: ${{ github.run_id }}
             - Verification: ✅ Passed
           files: |
-            efs-utils/build/aws-efs-utils-${{ steps.check-version.outputs.version }}-1~debian13_amd64.deb
-            efs-utils/build/aws-efs-utils-latest~debian13_amd64.deb
+            efs-utils/build/amazon-efs-utils-${{ steps.check-version.outputs.version }}-1~debian13_amd64.deb
+            efs-utils/build/amazon-efs-utils-latest~debian13_amd64.deb
           draft: false
           prerelease: false
           make_latest: true
