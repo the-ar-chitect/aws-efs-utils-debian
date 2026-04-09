@@ -22,6 +22,12 @@ jobs:
             git binutils rustc cargo libssl-dev pkg-config gettext make cmake wget perl \
             gcc-13 g++-13 golang-go jq curl
 
+      - name: Install Latest Rust via rustup
+        run: |
+          # Install the latest stable Rust (currently satisfies 1.91.1+ required by AWS SDK)
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
       - name: Clone EFS Utils Repository
         run: git clone https://github.com/aws/efs-utils.git
 
@@ -57,6 +63,9 @@ jobs:
         if: steps.check-version.outputs.should_build == 'true'
         working-directory: efs-utils
         run: |
+          # Load rustup environment (required in each step)
+          . "$HOME/.cargo/env"
+
           # Force consistent GCC 13 everywhere (fixes LTO version mismatch)
           export CC=gcc-13
           export CXX=g++-13
