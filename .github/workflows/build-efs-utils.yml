@@ -1,69 +1,95 @@
 name: Build AWS EFS Utils for Debian 13
 
 on:
-  workflow_dispatch:      # Manual trigger from GitHub UI
+  workflow_dispatch:          # Manual trigger from GitHub UI
   schedule:
-    - cron: '0 */6 * * *'   # Runs every 6 hours (00:00, 06:00, 12:00, 18:00 UTC)
+    - cron: '0 */6 * * *'     # Runs every 6 hours (00:00, 06:00, 12:00, 18:00 UTC)
 
 jobs:
   build-deb:
     runs-on: ubuntu-latest
     container:
       image: debian:trixie
-
     permissions:
-      contents: write   # Required for creating/updating GitHub Releases
+      contents: write         # Required for creating/updating GitHub Releases
 
     steps:
       - name: Install Dependencies
         run: |
+          set -eux
           apt-get update
           apt-get install -y \
-            git binutils rustc cargo libssl-dev pkg-config gettext make cmake wget perl \
-            gcc-13 g++-13 golang-go jq curl
+            git binutils libssl-dev pkg-config gettext make cmake wget perl \
+            gcc-13 g++-13 golang-go jq curl ca-certificates
+          # NOTE: apt's rustc/cargo are deliberately NOT installed.
+          # Debian 13 ships rustc 1.85, upstream needs 1.91.1+; rustup below
+          # provides it, and having two toolchains on PATH only causes confusion.
 
       - name: Install Latest Rust via rustup
         run: |
-          # Install the latest stable Rust (currently satisfies 1.91.1+ required by AWS SDK)
+          set -eux
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Clone EFS Utils Repository
-        run: git clone https://github.com/aws/efs-utils.git
+        run: git clone --depth 1 https://github.com/aws/efs-utils.git
 
       - name: Check for New Upstream Version
         id: check-version
         working-directory: efs-utils
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          UPSTREAM_VERSION=$(grep '^VERSION=' build-deb.sh | cut -d= -f2 | tr -d '"')
-          echo "Upstream AWS version detected: $UPSTREAM_VERSION"
-          echo "version=$UPSTREAM_VERSION" >> $GITHUB_OUTPUT
+          set -eu
 
-          # Check against our stable "latest" release
-          API_URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/amazon-efs-utils-debian13"
-          RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "$API_URL")
+          # Upstream defines BOTH a version and a release; the package version is
+          # "$VERSION-$RELEASE" (see dist/amazon-efs-utils.control). Track both --
+          # a RELEASE-only bump (1 -> 3 in Nov 2025) is still a new package.
+          VERSION=$(sed -n 's/^VERSION=\(.*\)$/\1/p' build-deb.sh | tr -d '"' | head -n1)
+          RELEASE=$(sed -n 's/^RELEASE=\(.*\)$/\1/p' build-deb.sh | tr -d '"' | head -n1)
 
-          if echo "$RESPONSE" | grep -q '"message": "Not Found"'; then
-            echo "No previous release found → building for the first time"
-            echo "should_build=true" >> $GITHUB_OUTPUT
-          else
-            LATEST_VERSION=$(echo "$RESPONSE" | jq -r '.body' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "0.0.0")
-            echo "Latest published version: $LATEST_VERSION"
-
-            if [ "$UPSTREAM_VERSION" != "$LATEST_VERSION" ]; then
-              echo "New version detected → will build and publish"
-              echo "should_build=true" >> $GITHUB_OUTPUT
-            else
-              echo "No new version → skipping build and publish"
-              echo "should_build=false" >> $GITHUB_OUTPUT
-            fi
+          if [ -z "$VERSION" ] || [ -z "$RELEASE" ]; then
+            echo "::error::Could not parse VERSION/RELEASE from upstream build-deb.sh"
+            grep -nE '^(VERSION|RELEASE)=' build-deb.sh || true
+            exit 1
           fi
 
-      - name: Build and Rename Package
+          NVR="${VERSION}-${RELEASE}"
+          TAG="amazon-efs-utils-debian13-v${NVR}"
+          echo "Upstream: VERSION=${VERSION} RELEASE=${RELEASE} -> ${NVR}"
+
+          {
+            echo "version=${VERSION}"
+            echo "release=${RELEASE}"
+            echo "nvr=${NVR}"
+            echo "tag=${TAG}"
+          } >> "$GITHUB_OUTPUT"
+
+          # Ask GitHub directly whether we already published this exact NVR.
+          # Far more reliable than regex-scraping a release body.
+          API_URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/${TAG}"
+          CODE=$(curl -sS -o /dev/null -w '%{http_code}' \
+                   -H "Authorization: Bearer ${GH_TOKEN}" \
+                   -H "Accept: application/vnd.github+json" \
+                   "$API_URL")
+
+          if [ "$CODE" = "200" ]; then
+            echo "Release ${TAG} already exists -> nothing to do"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          elif [ "$CODE" = "404" ]; then
+            echo "No release for ${TAG} -> building"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Unexpected HTTP ${CODE} from ${API_URL}"
+            exit 1
+          fi
+
+      - name: Build Package
+        id: build
         if: steps.check-version.outputs.should_build == 'true'
         working-directory: efs-utils
         run: |
-          # Load rustup environment (required in each step)
+          set -eux
           . "$HOME/.cargo/env"
 
           # Force consistent GCC 13 everywhere (fixes LTO version mismatch)
@@ -71,36 +97,67 @@ jobs:
           export CXX=g++-13
           export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=gcc-13
 
-          # Set Debian 13 release suffix
-          sed -i "s/^RELEASE=1$/RELEASE=1.debian13/" build-deb.sh
+          # Append the Debian 13 suffix to WHATEVER release upstream currently uses.
+          # The old pattern was ^RELEASE=1$, which silently stopped matching when
+          # upstream moved to RELEASE=3 -- sed exits 0 on no-match, so the build
+          # kept producing an un-suffixed .deb and only the later `cp` blew up.
+          sed -i -E 's/^RELEASE=([0-9]+)$/RELEASE=\1.debian13/' build-deb.sh
+
+          # Fail loudly if the substitution did not take effect.
+          grep -qE '^RELEASE=[0-9]+\.debian13$' build-deb.sh || {
+            echo "::error::RELEASE suffix not applied -- upstream build-deb.sh format changed"
+            grep -nE '^(VERSION|RELEASE)=' build-deb.sh
+            exit 1
+          }
+          grep -E '^(VERSION|RELEASE)=' build-deb.sh
 
           ./build-deb.sh
 
-          # Show final packages for logging
-          ls -l build/amazon-efs-utils*.deb
+          # ---- Discover the artifact; never reconstruct its name by hand. ----
+          # build-deb.sh copies the .deb into build/ as
+          #   amazon-efs-utils-${VERSION}-${RELEASE}_${ARCH}.deb
+          # with ARCH from `dpkg --print-architecture`.
+          DEB=$(ls -1 build/amazon-efs-utils-*.deb | head -n1)
+          test -f "$DEB"
+
+          ARCH=$(dpkg-deb -f "$DEB" Architecture)
+          PKG_VERSION=$(dpkg-deb -f "$DEB" Version)
+
+          LATEST="build/amazon-efs-utils-latest.debian13_${ARCH}.deb"
+          cp "$DEB" "$LATEST"
+          ls -l build/*.deb
+
+          {
+            echo "deb_path=efs-utils/${DEB}"
+            echo "latest_path=efs-utils/${LATEST}"
+            echo "deb_name=$(basename "$DEB")"
+            echo "latest_name=$(basename "$LATEST")"
+            echo "arch=${ARCH}"
+            echo "pkg_version=${PKG_VERSION}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Verify the Debian Package
         if: steps.check-version.outputs.should_build == 'true'
         run: |
-          echo "🔍 Installing and testing the .deb on Debian 13..."
-          DEBIAN_FRONTEND=noninteractive apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y ./efs-utils/build/amazon-efs-utils*.deb
+          set -eux
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y "./${{ steps.build.outputs.deb_path }}"
 
-          echo "✅ Package installed successfully"
-          dpkg -l | grep -i amazon-efs-utils
+          # Real assertions. The previous `amazon-efs-utils --version` checked a
+          # binary that does not exist -- and because it sat on the left of an
+          # `&&`, set -e did not fail the step, so verification was a no-op.
+          dpkg -s amazon-efs-utils | grep -E '^(Package|Version|Architecture):'
 
-          echo "✅ Checking binaries..."
-          which mount.efs && echo "   mount.efs found at $(which mount.efs)"
-          amazon-efs-utils --version && echo "   Version: $(amazon-efs-utils --version)"
+          test -x /sbin/mount.efs
+          test -x /sbin/mount.s3files
+          test -x /usr/bin/efs-proxy
+          test -x /usr/bin/amazon-efs-mount-watchdog
 
-          echo "🎉 Verification PASSED!"
+          # Informational only: --version support is not guaranteed across releases.
+          /sbin/mount.efs --version || echo "note: mount.efs did not accept --version"
 
-      - name: Prepare Latest Asset
-        if: steps.check-version.outputs.should_build == 'true'
-        run: |
-          cp efs-utils/build/amazon-efs-utils-${{ steps.check-version.outputs.version }}-1.debian13_amd64.deb \
-             efs-utils/build/amazon-efs-utils-latest.debian13_amd64.deb
-          ls -l efs-utils/build/amazon-efs-utils*.deb
+          echo "Verification passed."
 
       - name: Upload Artifact (temporary download)
         if: steps.check-version.outputs.should_build == 'true'
@@ -109,21 +166,26 @@ jobs:
           name: amazon-efs-utils-debian13
           path: efs-utils/build/amazon-efs-utils*.deb
           retention-days: 14
+          if-no-files-found: error
 
       - name: Publish Versioned Release (immutable)
         if: steps.check-version.outputs.should_build == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: amazon-efs-utils-debian13-v${{ steps.check-version.outputs.version }}
-          name: amazon-efs-utils-debian13 v${{ steps.check-version.outputs.version }}
+          tag_name: ${{ steps.check-version.outputs.tag }}
+          name: amazon-efs-utils-debian13 v${{ steps.check-version.outputs.nvr }}
           body: |
             **Debian 13 (trixie) build of amazon-efs-utils**
 
-            - Upstream version: ${{ steps.check-version.outputs.version }}
+            - Upstream version: `${{ steps.check-version.outputs.version }}`
+            - Upstream release: `${{ steps.check-version.outputs.release }}`
+            - Package version: `${{ steps.build.outputs.pkg_version }}`
+            - Architecture: `${{ steps.build.outputs.arch }}`
+            - Asset: `${{ steps.build.outputs.deb_name }}`
             - Built on: ${{ github.event_name == 'schedule' && 'scheduled run (every 6h)' || 'manual trigger' }}
             - GitHub Actions run: ${{ github.run_id }}
-            - Verification: ✅ Passed
-          files: efs-utils/build/amazon-efs-utils-${{ steps.check-version.outputs.version }}-1.debian13_amd64.deb
+            - Verification: install + binary checks passed
+          files: ${{ steps.build.outputs.deb_path }}
           draft: false
           prerelease: false
         env:
@@ -138,17 +200,18 @@ jobs:
           body: |
             **Latest Debian 13 (trixie) build of amazon-efs-utils**
 
-            - Current upstream version: ${{ steps.check-version.outputs.version }}
+            - Current package version: `${{ steps.build.outputs.pkg_version }}`
+            - Architecture: `${{ steps.build.outputs.arch }}`
             - Files:
-              - `amazon-efs-utils-${{ steps.check-version.outputs.version }}-1.debian13_amd64.deb`
-              - `amazon-efs-utils-latest.debian13_amd64.deb` (always updated)
+              - `${{ steps.build.outputs.deb_name }}`
+              - `${{ steps.build.outputs.latest_name }}` (always updated)
             - All previous versions are kept in this release.
             - Built on: ${{ github.event_name == 'schedule' && 'scheduled run (every 6h)' || 'manual trigger' }}
             - GitHub Actions run: ${{ github.run_id }}
-            - Verification: ✅ Passed
+            - Verification: install + binary checks passed
           files: |
-            efs-utils/build/amazon-efs-utils-${{ steps.check-version.outputs.version }}-1.debian13_amd64.deb
-            efs-utils/build/amazon-efs-utils-latest.debian13_amd64.deb
+            ${{ steps.build.outputs.deb_path }}
+            ${{ steps.build.outputs.latest_path }}
           draft: false
           prerelease: false
           make_latest: true
